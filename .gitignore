@@ -17,3 +17,4 @@ __pycache__/
 .claude/
 .idea/
 .vscode/
+sync_all.sh

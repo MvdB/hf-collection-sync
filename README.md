@@ -22,10 +22,23 @@ State is persisted in `.sync_state.json` so interrupted runs resume cleanly.
 
 ## Setup
 
+Windows:
+
 ```bash
 python -m venv .venv
-.venv\Scripts\activate        # Windows
+.venv\Scripts\activate
 pip install -r requirements.txt
+
+copy .env.example .env
+# → edit .env and insert your HF_TOKEN
+```
+
+Linux / macOS (use a separate venv path if the repo lives on a share that's
+also accessed from Windows — the two venvs are not compatible):
+
+```bash
+python3 -m venv .venv-linux
+.venv-linux/bin/pip install -r requirements.txt
 
 cp .env.example .env
 # → edit .env and insert your HF_TOKEN
@@ -53,8 +66,8 @@ IGNORE_PATTERNS = ["*.msgpack", "flax_model*", "tf_model*", "rust_model*"]
 ## Usage
 
 ```bash
-# Linux / macOS
-python hf_sync.py
+# Linux / macOS (uses .venv-linux automatically)
+./hf_sync.sh
 
 # Windows (uses the local .venv automatically)
 hf_sync.bat

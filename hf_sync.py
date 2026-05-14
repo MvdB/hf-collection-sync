@@ -23,7 +23,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from huggingface_hub import HfApi, snapshot_download
-from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -41,9 +41,9 @@ IGNORE_PATTERNS: list[str] | None = None
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).parent
-ENV_FILE    = SCRIPT_DIR / ".env"
-STATE_FILE  = SCRIPT_DIR / ".sync_state.json"
-LOG_FILE    = SCRIPT_DIR / "hf_sync.log"
+ENV_FILE = SCRIPT_DIR / ".env"
+STATE_FILE = SCRIPT_DIR / ".sync_state.json"
+LOG_FILE = SCRIPT_DIR / "hf_sync.log"
 
 # .env früh laden, damit HF_COLLECTION bereits beim Modulstart verfügbar ist
 load_dotenv(ENV_FILE, override=True)
@@ -63,6 +63,7 @@ log = logging.getLogger(__name__)
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
+
 def load_token() -> str:
     """Liest HF_TOKEN aus .env-Datei."""
     if ENV_FILE.exists():
@@ -79,7 +80,8 @@ def load_state() -> dict:
     """Liest den lokalen Status (welcher SHA wurde zuletzt heruntergeladen)."""
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            data: dict = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            return data
         except json.JSONDecodeError:
             log.warning("Beschädigte State-Datei – wird zurückgesetzt.")
     return {}
@@ -113,8 +115,7 @@ def find_collection(api: HfApi, username: str, token: str):
         matches = [c for c in collections if COLLECTION_NAME.lower() in c.title.strip().lower()]
         if matches:
             log.warning(
-                f"Kein exakter Treffer für '{COLLECTION_NAME}', "
-                f"verwende '{matches[0].title}'."
+                f"Kein exakter Treffer für '{COLLECTION_NAME}', verwende '{matches[0].title}'."
             )
             match = matches[0]
 
@@ -154,10 +155,10 @@ def sync_model(
     Lädt ein Modell herunter oder überspringt es wenn aktuell.
     Gibt zurück: 'skipped' | 'downloaded' | 'updated' | 'failed'
     """
-    local_dir   = local_dir_for(model_id)
-    stored      = state.get(model_id, {})
-    stored_sha  = stored.get("sha")
-    is_present  = local_dir.exists() and any(local_dir.iterdir())
+    local_dir = local_dir_for(model_id)
+    stored = state.get(model_id, {})
+    stored_sha = stored.get("sha")
+    is_present = local_dir.exists() and any(local_dir.iterdir())
 
     # Aktuell prüfen
     if is_present and stored_sha and remote_sha and stored_sha == remote_sha:
@@ -210,19 +211,20 @@ def sync_model(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     log.info("=" * 60)
     log.info(f"HF LocalCache Sync  —  Collection: '{COLLECTION_NAME}'")
     log.info("=" * 60)
 
     token = load_token()
-    api   = HfApi()
+    api = HfApi()
     state = load_state()
 
     # Nutzer identifizieren
     try:
         user_info = api.whoami(token=token)
-        username  = user_info["name"]
+        username = user_info["name"]
     except Exception as exc:
         log.error(f"Authentifizierung fehlgeschlagen: {exc}")
         sys.exit(1)
@@ -236,7 +238,7 @@ def main() -> None:
     log.info(f"Collection '{collection.title}': {len(model_items)} Modelle")
     if skipped_types:
         log.info(
-            f"Übersprungen (kein Modell): "
+            "Übersprungen (kein Modell): "
             + ", ".join(f"{i.item_id} ({i.item_type})" for i in skipped_types)
         )
 
@@ -244,9 +246,9 @@ def main() -> None:
     counts = {"skipped": 0, "downloaded": 0, "updated": 0, "failed": 0}
 
     for item in model_items:
-        model_id   = item.item_id
+        model_id = item.item_id
         remote_sha = get_remote_sha(api, model_id, token)
-        result     = sync_model(model_id, token, remote_sha, state)
+        result = sync_model(model_id, token, remote_sha, state)
         counts[result] += 1
 
     # Zusammenfassung

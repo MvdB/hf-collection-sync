@@ -17,4 +17,14 @@ __pycache__/
 .claude/
 .idea/
 .vscode/
+
+# Persönliche Cron-Wrapper (maschinenspezifisch, nicht versioniert)
 sync_all.sh
+sync_nas.sh
+
+# Lokale Caches
+.hfcache/
+.tiktoken_encodings/
+
+# Heruntergeladene Papers
+*.pdf

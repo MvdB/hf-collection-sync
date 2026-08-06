@@ -52,6 +52,12 @@ Persistent files at repo root, all gitignored:
 ## Conventions
 
 - Log/comment strings in `hf_sync.py` are in German — match that style when editing.
-- `IGNORE_PATTERNS` at the top of `hf_sync.py` is the single knob for filtering which files
-  in each repo get downloaded (e.g. skip TF/Flax weights). It's `None` by default = download everything.
+- Two knobs at the top of `hf_sync.py` control which files get downloaded:
+  - `IGNORE_PATTERNS` — global blocklist applied to every repo (e.g. skip TF/Flax weights).
+    `None` by default = download everything.
+  - `ALLOW_PATTERNS` — `{model_id: [glob, ...]}`, an allowlist for individual repos. Not listed
+    = whole repo. For repos shipping many quantization variants of the same weights, where the
+    whole repo is hundreds of GB and you want three files. The patterns are stored in
+    `.sync_state.json` under `allow`, so editing them re-downloads that model on the next run
+    instead of waiting for the remote SHA to change.
 - Python 3.11+, line length 100, ruff rules `E,F,W,I,UP` with `E501` ignored (see `pyproject.toml`).

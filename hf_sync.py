@@ -36,6 +36,18 @@ COLLECTION_NAME = os.environ.get("HF_COLLECTION", "LocalCache")  # überschreibb
 # IGNORE_PATTERNS = ["*.msgpack", "flax_model*", "tf_model*", "rust_model*"]
 IGNORE_PATTERNS: list[str] | None = None
 
+# Pro Modell nur bestimmte Dateien holen (nicht eingetragen = ganzes Repo).
+# Für Repos, die ein Dutzend Quantisierungs-Varianten derselben Gewichte
+# ausliefern: dort lädt man sonst hunderte GB für die drei Dateien, die man
+# tatsächlich braucht. Schlüssel ist die exakte model_id aus der Collection.
+ALLOW_PATTERNS: dict[str, list[str]] = {
+    # "Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot": [
+    #     "MiniMax_H3_FL2VA_pruned_nvfp4.safetensors",
+    #     "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    #     "vae/*",
+    # ],
+}
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
@@ -94,6 +106,11 @@ def save_state(state: dict) -> None:
 def local_dir_for(model_id: str) -> Path:
     """'mistralai/Mistral-7B-v0.1' → './mistralai--Mistral-7B-v0.1'"""
     return SCRIPT_DIR / model_id.replace("/", "--")
+
+
+def allow_patterns_for(model_id: str) -> list[str] | None:
+    """Dateimuster für dieses Modell, None = ganzes Repo herunterladen."""
+    return ALLOW_PATTERNS.get(model_id) or None
 
 
 def find_collection(api: HfApi, username: str, token: str):
@@ -158,16 +175,29 @@ def sync_model(
     local_dir = local_dir_for(model_id)
     stored = state.get(model_id, {})
     stored_sha = stored.get("sha")
+    allow = allow_patterns_for(model_id)
+    # Muster gehören zum Zustand: ändert man sie, passt der SHA weiterhin,
+    # das lokale Dateiset aber nicht mehr. Ohne diesen Vergleich bliebe die
+    # Änderung bis zum nächsten Remote-Commit wirkungslos.
+    patterns_changed = stored.get("allow") != allow
     is_present = local_dir.exists() and any(local_dir.iterdir())
 
     # Aktuell prüfen
-    if is_present and stored_sha and remote_sha and stored_sha == remote_sha:
+    if (
+        is_present
+        and stored_sha
+        and remote_sha
+        and stored_sha == remote_sha
+        and not patterns_changed
+    ):
         log.info(f"[OK]       {model_id}  (sha {remote_sha[:8]}…)")
         return "skipped"
 
     # Status-Ausgabe
     if not is_present:
-        log.info(f"[DOWNLOAD] {model_id}")
+        log.info(f"[DOWNLOAD] {model_id}" + (f"  ({len(allow)} Muster)" if allow else ""))
+    elif patterns_changed:
+        log.info(f"[UPDATE]   {model_id}  (Dateimuster geändert)")
     else:
         old = stored_sha[:8] + "…" if stored_sha else "?"
         new = remote_sha[:8] + "…" if remote_sha else "?"
@@ -181,6 +211,8 @@ def sync_model(
             local_dir=str(local_dir),
             token=token,
         )
+        if allow:
+            kwargs["allow_patterns"] = allow
         if IGNORE_PATTERNS:
             kwargs["ignore_patterns"] = IGNORE_PATTERNS
 
@@ -200,7 +232,10 @@ def sync_model(
         log.error(f"[FAIL]     {model_id}  → {exc}")
         return "failed"
 
-    state[model_id] = {"sha": remote_sha, "local_dir": str(local_dir)}
+    entry: dict = {"sha": remote_sha, "local_dir": str(local_dir)}
+    if allow:  # nur schreiben wenn gesetzt, damit bestehende Einträge unverändert bleiben
+        entry["allow"] = allow
+    state[model_id] = entry
     save_state(state)
 
     was_update = is_present

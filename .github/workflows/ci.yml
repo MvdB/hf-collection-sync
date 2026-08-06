@@ -4,6 +4,10 @@ on:
   push:
     branches: ["main"]
   pull_request:
+  # Manuell auslösbar: ein Push löst nicht immer einen Run aus (siehe 546bc95,
+  # gepusht ohne dass Actions je ein Event verarbeitet hat). Damit lässt sich
+  # ein Run nachholen, ohne einen Leer-Commit zu erzeugen.
+  workflow_dispatch:
 
 jobs:
   lint:

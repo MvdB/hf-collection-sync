@@ -1,5 +1,7 @@
-# hf-collection-sync
+# southbyte-sync
 
+The HuggingFace collection mirror of the [southbyte](https://southbyte.de) DGX Spark
+toolkit — generic enough to use standalone.
 Syncs all models from a named HuggingFace collection to a local directory.
 Updates are detected via commit SHA — already-current models are skipped without re-downloading.
 
@@ -106,6 +108,19 @@ Create a basic task that runs `hf_sync.bat` on a schedule — daily or on login.
 - `huggingface_hub >= 0.24.0`
 - `python-dotenv >= 1.0.0`
 
+## Part of the southbyte family
+
+- [southbyte-core](https://github.com/MvdB/southbyte-core) — shared index
+- [southbyte-sync](https://github.com/MvdB/southbyte-sync) — HuggingFace collection mirror → local model store *(this repo)*
+- [southbyte-vllm](https://github.com/MvdB/southbyte-vllm) — vLLM serving runner + LLM evaluation testplan
+- [southbyte-tts](https://github.com/MvdB/southbyte-tts) — TTS/STT serving + German-language evaluation
+- [southbyte-spark-profiles](https://github.com/MvdB/southbyte-spark-profiles) — DGX Spark (GB10) validated profiles, kernels, benchmarks
+- **southbyte-image** *(planned)* — text-to-image serving + evaluation (diffusers)
+
 ## License
 
 MIT — see [LICENSE](LICENSE)
+
+---
+
+Built by [southbyte](https://southbyte.de).

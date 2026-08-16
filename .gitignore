@@ -4,6 +4,8 @@
 # Runtime-Dateien
 .sync_state.json
 hf_sync.log
+*.log
+*.bak
 
 # Modell-Verzeichnisse (lokal gecacht, nicht versioniert)
 *--*/

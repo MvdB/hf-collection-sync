@@ -13,17 +13,36 @@ Verzeichnisstruktur:
 
 Konfiguration:
     .env Datei im selben Verzeichnis mit HF_TOKEN=hf_...
+    HF_PRUNE_MODE=move|delete|report steuert, was mit Dateien passiert,
+    die es stromaufwärts nicht mehr gibt (Vorgabe: move).
 """
 
 import json
 import logging
 import os
+import shutil
 import sys
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
 from huggingface_hub import HfApi, snapshot_download
 from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+
+# ---------------------------------------------------------------------------
+# Pfade und .env
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR = Path(__file__).parent
+ENV_FILE = SCRIPT_DIR / ".env"
+STATE_FILE = SCRIPT_DIR / ".sync_state.json"
+LOG_FILE = SCRIPT_DIR / "hf_sync.log"
+
+# Muss vor dem Konfigurationsblock stehen: die Konstanten dort werden beim Import
+# ausgewertet, ein später geladenes .env käme zu spät und würde stillschweigend
+# ignoriert. Ohne override, damit ein einmaliges `HF_PRUNE_MODE=report ./hf_sync.sh`
+# auch wirklich greift statt still vom .env-Wert überschrieben zu werden.
+load_dotenv(ENV_FILE)
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -48,17 +67,20 @@ ALLOW_PATTERNS: dict[str, list[str]] = {
     # ],
 }
 
+# Umgang mit Dateien, die es stromaufwärts nicht mehr gibt: snapshot_download
+# räumt nie auf, umbenannte oder zurückgezogene Dateien lägen sonst für immer
+# herum. Umschaltbar über HF_PRUNE_MODE in der .env oder der Umgebung:
+#   move    – nach RETIRE_DIR verschieben (Hausregel: in $HOME wird nichts gelöscht)
+#   delete  – lokal entfernen
+#   report  – nur melden, nichts anfassen (auch der Rückfall bei Tippfehlern)
+PRUNE_MODE = os.environ.get("HF_PRUNE_MODE", "move").strip().lower()
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).parent
-ENV_FILE = SCRIPT_DIR / ".env"
-STATE_FILE = SCRIPT_DIR / ".sync_state.json"
-LOG_FILE = SCRIPT_DIR / "hf_sync.log"
-
-# .env früh laden, damit HF_COLLECTION bereits beim Modulstart verfügbar ist
-load_dotenv(ENV_FILE, override=True)
+# Ziel für PRUNE_MODE="move": datiert, damit ein Fehlgriff nachvollziehbar bleibt.
+RETIRE_DIR = Path.home() / "southbyte" / "_retired" / "hf_models-prune" / date.today().isoformat()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -113,6 +135,98 @@ def allow_patterns_for(model_id: str) -> list[str] | None:
     return ALLOW_PATTERNS.get(model_id) or None
 
 
+def human(num: int) -> str:
+    """Bytes menschenlesbar: 1234567 → '1.2 MB'."""
+    size = float(num)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def downloaded_files(local_dir: Path) -> dict[str, Path]:
+    """Vom Sync selbst geholte Dateien: Repo-Pfad → zugehörige Sidecar-Datei.
+
+    huggingface_hub legt zu jedem Download ein `.cache/huggingface/download/
+    <pfad>.metadata` an. Was keinen Sidecar hat, stammt nicht von uns – etwa die
+    lokal gepflegten vllm_profile.conf – und wird beim Aufräumen nie angefasst.
+    """
+    meta_root = local_dir / ".cache" / "huggingface" / "download"
+    if not meta_root.is_dir():
+        return {}
+    return {
+        sidecar.relative_to(meta_root).as_posix().removesuffix(".metadata"): sidecar
+        for sidecar in meta_root.rglob("*.metadata")
+    }
+
+
+def drop_empty_dirs(removed: Path, stop: Path) -> None:
+    """Räumt die Verzeichnisse über einer entfernten Datei weg, solange sie leer sind."""
+    parent = removed.parent
+    while parent != stop and stop in parent.parents:
+        try:
+            parent.rmdir()
+        except OSError:
+            return
+        parent = parent.parent
+
+
+def prune_removed(model_id: str, remote_files: set[str]) -> tuple[int, int]:
+    """Entfernt lokale Dateien, die es im Repo nicht mehr gibt.
+
+    Gibt (Anzahl, Bytes) zurück. Eine leere Remote-Liste gilt als Aussetzer der
+    API und nie als "stromaufwärts ist alles weg" – dann passiert gar nichts.
+    """
+    local_dir = local_dir_for(model_id)
+    if not remote_files or not local_dir.is_dir():
+        return 0, 0
+
+    meta_root = local_dir / ".cache" / "huggingface" / "download"
+    count = 0
+    freed = 0
+
+    for rel, sidecar in sorted(downloaded_files(local_dir).items()):
+        if rel in remote_files or ".." in Path(rel).parts:
+            continue
+
+        target = local_dir / rel
+        if not target.exists():
+            if PRUNE_MODE in ("move", "delete"):
+                sidecar.unlink(missing_ok=True)  # verwaister Sidecar, Datei ist längst weg
+            continue
+
+        size = target.stat().st_size
+
+        if PRUNE_MODE not in ("move", "delete"):
+            log.info(f"[PRUNE?]   {model_id}  {rel}  ({human(size)}) – nur gemeldet")
+            count += 1
+            freed += size
+            continue
+
+        try:
+            if PRUNE_MODE == "move":
+                dest = RETIRE_DIR / local_dir.name / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(target), str(dest))
+                whereto = f"→ {dest}"
+            else:
+                target.unlink()
+                whereto = "gelöscht"
+            sidecar.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning(f"[PRUNE]    {model_id}  {rel} – fehlgeschlagen: {exc}")
+            continue
+
+        drop_empty_dirs(target, local_dir)
+        drop_empty_dirs(sidecar, meta_root)
+        count += 1
+        freed += size
+        log.info(f"[PRUNE]    {model_id}  {rel}  ({human(size)}) {whereto}")
+
+    return count, freed
+
+
 def find_collection(api: HfApi, username: str, token: str):
     """Sucht die 'LocalCache'-Collection des Nutzers und lädt sie vollständig."""
     collections = list(api.list_collections(owner=username, token=token))
@@ -146,20 +260,26 @@ def find_collection(api: HfApi, username: str, token: str):
     return api.get_collection(match.slug, token=token)
 
 
-def get_remote_sha(api: HfApi, model_id: str, token: str) -> str | None:
-    """Holt den aktuellen Commit-SHA des Modells von HuggingFace."""
+def get_remote_info(api: HfApi, model_id: str, token: str) -> tuple[str | None, set[str]]:
+    """Commit-SHA und Dateiliste des Modells auf HuggingFace.
+
+    Beides kommt aus demselben model_info-Aufruf; die Dateiliste ist die
+    Grundlage fürs Aufräumen und bleibt bei jedem Fehler leer, damit ein
+    Aussetzer nie als Löschsignal durchgeht.
+    """
     try:
         info = api.model_info(model_id, token=token)
-        return info.sha
+        sha: str | None = info.sha
+        return sha, {s.rfilename for s in (info.siblings or [])}
     except RepositoryNotFoundError:
         log.error(f"[{model_id}] Repository nicht gefunden (privat oder gelöscht?).")
-        return None
+        return None, set()
     except GatedRepoError:
         log.error(f"[{model_id}] Zugriff verweigert (gated model – Lizenz akzeptieren?).")
-        return None
+        return None, set()
     except Exception as exc:
         log.warning(f"[{model_id}] SHA konnte nicht abgerufen werden: {exc}")
-        return None
+        return None, set()
 
 
 def sync_model(
@@ -252,6 +372,9 @@ def main() -> None:
     log.info(f"HF LocalCache Sync  —  Collection: '{COLLECTION_NAME}'")
     log.info("=" * 60)
 
+    if PRUNE_MODE not in ("move", "delete", "report"):
+        log.warning(f"Unbekannter HF_PRUNE_MODE '{PRUNE_MODE}' – es wird nur gemeldet.")
+
     token = load_token()
     api = HfApi()
     state = load_state()
@@ -279,12 +402,21 @@ def main() -> None:
 
     # Modelle synchronisieren
     counts = {"skipped": 0, "downloaded": 0, "updated": 0, "failed": 0}
+    pruned_files = 0
+    pruned_bytes = 0
 
     for item in model_items:
         model_id = item.item_id
-        remote_sha = get_remote_sha(api, model_id, token)
+        remote_sha, remote_files = get_remote_info(api, model_id, token)
         result = sync_model(model_id, token, remote_sha, state)
         counts[result] += 1
+
+        # Auch nach [OK] aufräumen: Dateien, die ein früherer Lauf schon mit dem
+        # aktuellen SHA liegen ließ, würden sonst nie auffallen.
+        if result != "failed":
+            n, freed = prune_removed(model_id, remote_files)
+            pruned_files += n
+            pruned_bytes += freed
 
     # Zusammenfassung
     log.info("")
@@ -294,6 +426,15 @@ def main() -> None:
     log.info(f"  Neu heruntergeladen:    {counts['downloaded']}")
     log.info(f"  Aktualisiert:           {counts['updated']}")
     log.info(f"  Fehlgeschlagen:         {counts['failed']}")
+    if PRUNE_MODE == "move":
+        aufraeumen = f"verschoben nach {RETIRE_DIR}"
+    elif PRUNE_MODE == "delete":
+        aufraeumen = "gelöscht"
+    else:
+        aufraeumen = "nur gemeldet"
+    log.info(
+        f"  Entfernt stromaufwärts: {pruned_files} Datei(en), {human(pruned_bytes)} – {aufraeumen}"
+    )
     log.info("=" * 60)
 
     if counts["failed"] > 0:
